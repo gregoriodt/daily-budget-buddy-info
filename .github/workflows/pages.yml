@@ -1,0 +1,69 @@
+# Template for the separate public information repository only.
+# Nothing in this file runs from the private app repository.
+name: Publish approved information pages
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: approved-information-pages
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.repository == 'gregoriodt/daily-budget-buddy-info' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Read the approved static package
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Check the finite publication payload
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { readdir, lstat, readFile } from 'node:fs/promises';
+          const expected = ['.nojekyll','assets/style.css','en/privacy/index.html','en/support/index.html','index.html','it/privacy/index.html','it/support/index.html','robots.txt'].sort();
+          const actual = [];
+          async function inspect(directory, prefix = '') {
+            for (const name of await readdir(directory)) {
+              const filename = directory + '/' + name;
+              const info = await lstat(filename);
+              assert(!info.isSymbolicLink(), 'Symlinks are not allowed');
+              if (info.isDirectory()) await inspect(filename, prefix + name + '/');
+              else { assert(info.isFile(), 'Only ordinary static files are allowed'); actual.push(prefix + name); }
+            }
+          }
+          const root = await lstat('site');
+          assert(root.isDirectory() && !root.isSymbolicLink(), 'site must be an ordinary directory');
+          await inspect('site');
+          assert.deepEqual(actual.sort(), expected, 'Unexpected public file');
+          for (const name of expected.filter(name => name.endsWith('.html'))) {
+            const html = await readFile('site/' + name, 'utf8');
+            assert(!/<(?:script|iframe|form|img)\b/i.test(html), 'Unexpected active or remote content');
+            assert(!/\b(?:bozza|draft)\b|anteprima locale|local preview|not published|non pubblicata/i.test(html), 'Unfinalized copy');
+            assert(html.includes("default-src 'none'"), 'Missing static security policy');
+          }
+          NODE
+      - name: Configure the existing Pages destination
+        uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
+      - name: Upload only the static site
+        uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
+        with:
+          path: site
+          retention-days: 1
+      - name: Publish the approved artifact
+        id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
